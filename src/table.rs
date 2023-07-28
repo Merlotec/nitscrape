@@ -7,6 +7,7 @@ use crate::twt::{Tweet, self, TweetId};
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TweetEntry {
+    pub pos: Option<u64>,
     pub id: TweetId,
     pub timestamp: Option<DateTime<Utc>>,
     pub subject: Option<String>,
@@ -61,6 +62,10 @@ impl<R: io::Read + io::Seek> TweetCsvReader<R> {
         TweetCsvIter { iter: self.rdr.records(), layout: &self.layout }
     }
 
+    pub fn count(mut self) -> usize {
+        self.rdr.records().count()
+    }
+
     pub fn hydrator<'r, P: AsRef<Path>>(&'r mut self, output: P, cursor: usize) -> csv::Result<CsvHydrator<'r, R>> {
         let mut iter = self.rdr.records();
         if cursor > 0 {
@@ -113,6 +118,7 @@ impl<'r, R: io::Read + io::Seek> Iterator for TweetCsvIter<'r, R> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let record =  self.iter.next()?;
+       
         Some(
         match record {
             Ok(r) => {
@@ -157,12 +163,11 @@ impl<'r, R: io::Read + io::Seek> Iterator for TweetCsvIter<'r, R> {
                     }
                 };
 
-                Ok(TweetEntry { id, timestamp, subject })
+                Ok(TweetEntry { pos: r.position().map(|x| x.record()), id, timestamp, subject })
             },
             Err(e) => Err(CsvError::ReadError(e)),
         }
         )
-
     }
 }
 

@@ -1,7 +1,8 @@
 use atomic_float::AtomicF64;
 use chrono::Duration;
-use futures::{future::join_all, lock::Mutex, Future, SinkExt, StreamExt};
+use futures::{future::{join_all, Join}, lock::Mutex, Future, SinkExt, StreamExt};
 use reqwest::{Client, ClientBuilder, IntoUrl, Proxy, Request, Response, StatusCode};
+use scraper::error;
 use std::{
     collections::VecDeque,
     convert::identity,
@@ -9,14 +10,16 @@ use std::{
     ops::{DerefMut, Range},
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering, AtomicU32},
         Arc,
     },
-    time::SystemTime,
+    time::SystemTime, os::unix::raw::time_t,
 };
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::{io::AsyncBufReadExt, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
+
+use crate::dbg_lvl;
 
 pub trait NetClientManager {
     fn get(&self, url: &dyn IntoUrl) -> reqwest::Result<Response>;
@@ -24,9 +27,11 @@ pub trait NetClientManager {
 
 #[derive(Debug, Clone)]
 pub struct ClientInfo {
+    pub client_id: u32, // Usually matches kernel id
     pub tor_path: String,
     pub config_path: String,
     pub port: u32,
+    pub timeout: f64,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -78,18 +83,25 @@ pub struct TorClient {
 }
 
 impl TorClientManager {
+    pub const TOR_DATA_PATH: &'static str = "tor/data";
+    pub const TOR_CONFIG_PATH: &'static str = "tor/config";
+
     pub async fn generate_configs(
         tor_path: String,
         base_config: String,
         port_range: Range<u32>,
+        timeout: f64,
     ) -> std::io::Result<Self> {
         let base_cfg = std::fs::read_to_string(&base_config)?;
         let mut client_configs: Vec<ClientInfo> = Vec::with_capacity(port_range.len());
 
         let working_dir = std::env::current_dir()?;
 
+        std::fs::create_dir_all(Self::TOR_DATA_PATH)?;
+        std::fs::create_dir_all(Self::TOR_CONFIG_PATH)?;
+
         for (i, port) in port_range.enumerate() {
-            let data_dir = format!("{}\\tor\\data\\data_{}", working_dir.to_string_lossy(), i);
+            let data_dir = format!("{}/{}/data_{}", working_dir.to_string_lossy(), Self::TOR_DATA_PATH, i);
             let cfg = format!(
                 "{}\nDataDirectory {}\nSocksListenAddress 127.0.0.1:{}\nSocksPort {}",
                 base_cfg.clone(),
@@ -99,17 +111,20 @@ impl TorClientManager {
             );
 
             let config_path = format!(
-                "{}\\tor\\config\\temp_torrc_{}",
+                "{}/{}/temp_torrc_{}",
                 working_dir.to_str().unwrap(),
+                Self::TOR_CONFIG_PATH,
                 i
             );
 
             std::fs::write(&config_path, cfg)?;
 
             client_configs.push(ClientInfo {
+                client_id: i as u32,
                 tor_path: tor_path.clone(),
                 config_path,
                 port,
+                timeout,
             });
         }
         Ok(Self::new(client_configs.into_iter()).await)
@@ -120,20 +135,24 @@ impl TorClientManager {
     pub fn from_generated_configs(
         tor_path: String,
         port_range: Range<u32>,
+        timeout: f64,
     ) -> std::io::Result<Self> {
         let mut client_configs: Vec<ClientInfo> = Vec::with_capacity(port_range.len());
         let working_dir = std::env::current_dir()?;
         for (i, port) in port_range.enumerate() {
             let config_path = format!(
-                "{}\\tor\\config\\temp_torrc_{}",
+                "{}/{}/temp_torrc_{}",
                 working_dir.to_str().unwrap(),
+                Self::TOR_CONFIG_PATH,
                 i
             );
 
             client_configs.push(ClientInfo {
+                client_id: i as u32,
                 tor_path: tor_path.clone(),
                 config_path,
                 port,
+                timeout,
             });
         }
         Ok(Self::new_generated(client_configs.into_iter()))
@@ -181,12 +200,17 @@ impl TorClientManager {
         while let Ok(line) = stdout_lines.next_line().await {
             if let Some(line) = line {
                 // Check for tor launch success
-                #[cfg(feature = "tor-output")]
-                println!("TOR: {}", &line);
+                if dbg_lvl() >= 4 {
+                    println!("[client {}] tor: {}", client_info.client_id, &line);
+                }
+                
                 if line.contains("Bootstrapped 100% (done): Done") {
                     let scheme = format!("socks5://127.0.0.1:{}", client_info.port);
-                    println!("Initialised client with proxy scheme {}", &scheme);
+                    if dbg_lvl() >= 1 {
+                        println!("[client {}] Initialised client with proxy scheme {}", client_info.client_id, &scheme);
+                    }
                     let client = ClientBuilder::new()
+                        .connect_timeout(std::time::Duration::from_secs_f64(client_info.timeout))
                         .user_agent("Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
                         .proxy(Proxy::all(scheme).unwrap())
                         .build()
@@ -196,6 +220,11 @@ impl TorClientManager {
                         client,
                         cmd: Some(cmd),
                     });
+                } else if line.contains("[err]") {
+                    if dbg_lvl() >= 1 {
+                        println!("[client {}] Error creating tor circuit: {}", client_info.client_id, line);
+                    }
+                    return None;
                 }
             }
         }
@@ -240,7 +269,10 @@ impl TorClientManager {
     */
     fn existing_client(client_info: ClientInfo) -> Option<TorClient> {
         let scheme = format!("socks5://127.0.0.1:{}", client_info.port);
-        println!("Using existing client with proxy scheme {}", &scheme);
+        if dbg_lvl() >= 1 {
+            println!("[client {}] Using existing client with proxy scheme {}", client_info.client_id, &scheme);
+        }
+        
         Some(TorClient {
             client_info,
             client: ClientBuilder::new()
@@ -258,13 +290,11 @@ impl TorClientManager {
             }
         }
     }
-    /*
-    pub async fn proc_kernel(client: Client, req_queue: &PriorityQueue<ItemRequest<T>>, resp_queue: &PriorityQueue<ItemResponse<T>>) {
-        loop {
-            req_queue
-        }
+
+    pub fn client_count(&self) -> usize {
+        self.clients.len()
     }
-    */
+    
 }
 
 #[derive(Debug)]
@@ -299,6 +329,7 @@ pub struct AsyncLoadManager<C, T: Send> {
     input_queue: InputQueue<T>,
     output_sender: Sender<LoadResponse<T>>,
     output_queue: OutputQueue<T>,
+    handles: Vec<JoinHandle<()>>,
     dump: Dump<T>,
 }
 
@@ -307,7 +338,7 @@ impl<T: Send + Sync + 'static> AsyncLoadManager<TorClient, T> {
         &mut self,
         settings: TorKernelSettings,
         tor_mgr: TorClientManager,
-    ) -> Vec<tokio::task::JoinHandle<()>> {
+    ) {
         self.execute_kernels(settings, tor_mgr.clients.into_iter(), Self::tor_kernel)
     }
 }
@@ -322,6 +353,7 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
             input_queue: Arc::new(Mutex::new(input_queue)),
             output_sender,
             output_queue,
+            handles: Vec::new(),
             dump: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -331,7 +363,7 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
     }
 
     /// Gets all available output from the output queue.
-    pub fn output(&mut self) -> Vec<LoadResponse<T>> {
+    pub fn try_responses(&mut self) -> Vec<LoadResponse<T>> {
         let mut out = Vec::new();
         while let Some(next) = self.output_queue.try_recv().ok() {
             out.push(next);
@@ -339,7 +371,7 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
         out
     }
 
-    pub async fn next(&mut self) -> Option<LoadResponse<T>> {
+    pub async fn next_response(&mut self) -> Option<LoadResponse<T>> {
         self.output_queue.recv().await
     }
 
@@ -349,18 +381,18 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
         settings: S,
         clients: impl Iterator<Item = C>,
         mut f: F,
-    ) -> Vec<tokio::task::JoinHandle<R::Output>>
+    )
     where
-        F: FnMut(S, Arc<LoadKernel<C>>, InputQueue<T>, Sender<LoadResponse<T>>, Dump<T>) -> R,
-        R: Future + Send + 'static,
-        R::Output: Send + 'static,
+        F: FnMut(usize, S, Arc<LoadKernel<C>>, InputQueue<T>, Sender<LoadResponse<T>>, Dump<T>) -> R,
+        R: Future<Output = ()> + Send + 'static,
         F: Copy + Send + 'static,
         S: Clone + Send + 'static,
         T: Send + 'static,
         C: Send + 'static,
     {
-        let (mut kernels, handles): (Vec<_>, Vec<_>) = clients
-            .map(|client| {
+        let (mut kernels, mut handles): (Vec<_>, Vec<_>) = clients
+            .enumerate()
+            .map(|(i, client)| {
                 let kernel = Arc::new(LoadKernel {
                     client: Mutex::new(client),
                     ave_rate: AtomicF64::new(f64::NAN),
@@ -371,6 +403,7 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
                 (
                     kernel.clone(),
                     tokio::task::spawn(f(
+                        i,
                         settings.clone(),
                         kernel,
                         self.input_queue.clone(),
@@ -383,7 +416,7 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
 
         self.kernels.append(&mut kernels);
 
-        handles
+        self.handles.append(&mut handles);
     }
 
     pub fn ave_rate(&self) -> f64 {
@@ -414,14 +447,27 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
         }
     }
 
-    pub fn kill_kernels(&self) {
+    pub fn kernel_count(&self) -> usize {
+        self.kernels.len()
+    }
+
+    pub fn send_kernel_kill(&self) {
         for kernel in self.kernels.iter() {
             kernel.ctoken.cancel();
         }
     }
 
+    pub async fn kill_kernels(&mut self) {
+        self.send_kernel_kill();
+        for h in self.handles.drain(..) {
+            let _= h.await;
+        }
+    }
+
     /// Extracts the items that have not yet been sent to the output channel.
-    pub async fn dump(self) -> Vec<T> {
+    pub async fn dump(mut self) -> Vec<T> {
+        self.kill_kernels().await;
+        // We must wait for the kernels to finish before anything else.
         let mut dump = Vec::new();
         while let Some(next) = self.input_queue.lock().await.try_recv().ok() {
             dump.push(next.data);
@@ -433,6 +479,7 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
 
     // The function responsible for loading the data.
     pub async fn tor_kernel(
+        n: usize,
         settings: TorKernelSettings,
         k: Arc<LoadKernel<TorClient>>,
         iq: InputQueue<T>,
@@ -447,29 +494,61 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
 
         let mut ts: Option<SystemTime> = None;
 
+        let error_counter: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+
+        let mut client_reload_failure: i32 = 0;
+        let client_n: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+
+        let min_time = std::time::Duration::from_millis(settings.min_interval); // MINIMUM TIME BETWEEN REQUESTS - any faster is pointless due to server ip limitations!!!
+
+
         // Assume our client is loaded properly and begin loop.
         while !k.ctoken.is_cancelled() {
             // First check for reload.
-            if k.reload.load(Ordering::Relaxed) {
-                k.reload.store(false, Ordering::Relaxed);
+            if k.reload.load(Ordering::Relaxed) || (error_counter.load(Ordering::Relaxed) > settings.errors_before_reset as u32 && settings.errors_before_reset >= 0) {
+                k.reload.store(true, Ordering::Relaxed);
+                // Kill old client - it uses the same socket so we need it out of the way!
+                if let Some(cmd) = &mut k.client.lock().await.cmd {
+                    let _ = cmd.kill().await;
+                }
                 // Reload tor circuit, this will take time.
                 let client_info = {
                     let client = k.client.lock().await; // Keep scope small so we can unlock mutex for client load.
                     client.client_info.clone()
                 };
-
+                if dbg_lvl() >= 3 {
+                    println!("[kernel {}] Reloading kernel tor circuit and client...", n);
+                }
                 if let Some(new_client) = TorClientManager::load_client(client_info).await {
                     k.ave_rate.store(f64::NAN, Ordering::Relaxed);
                     k.req_count.store(0, Ordering::Relaxed);
                     k.reload.store(false, Ordering::Relaxed); // Store twice in case of weird timing with writes from other threads.
-
+                    
                     client = new_client.client.clone(); // Update our active client.
                     {
                         let mut cl = k.client.lock().await;
                         let clmut: &mut TorClient = cl.deref_mut();
                         *clmut = new_client;
                     }
+                    let res = client_n.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| Some(x + 1)).unwrap_or_else(|x| x);
+                    if dbg_lvl() >= 2 {
+                        println!("[kernel {}] Reloaded kernel client (number {})", n, client_n.load(Ordering::Relaxed));
+                    }
+                } else {
+                    
+                    if dbg_lvl() >= 2 {
+                        println!("[kernel {}] Client reload failed!", n);
+                    }
+                    client_reload_failure += 1;
+
+                    if settings.reload_errors_before_kill >= 0 && client_reload_failure >= settings.reload_errors_before_kill {
+                        if dbg_lvl() >= 1 {
+                            println!("[kernel {}] Killing kernel due to too many failed reloads", n);
+                        }
+                        break; // Kill the kernel
+                    }
                 }
+                error_counter.store(0, Ordering::SeqCst);
             } else {
                 if handles.len() > settings.max_handles {
                     tokio::time::sleep(std::time::Duration::from_millis(settings.await_downtime)).await;
@@ -477,11 +556,10 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
                     // Await next item to process:
                     let load_req: Option<LoadRequest<T>> = if active_req.is_empty() {
                         let mut iq = iq.lock().await;
-                        iq.recv().await
+                        iq.try_recv().ok()
                     } else {
                         Some(active_req.remove(0))
                     };
-                    let min_time = std::time::Duration::from_millis(settings.min_interval); // MINIMUM TIME BETWEEN REQUESTS - any faster is pointless due to server ip limitations!!!
                     if let Some(req) = load_req.as_ref().and_then(|x| x.req.try_clone()) {
                         if let Some(old_ts) = ts {
                             let now = SystemTime::now();
@@ -499,13 +577,15 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
                         let client = client.clone();
                         let os = os.clone();
                         let k = k.clone();
+                        let error_counter = error_counter.clone();
+                        let client_n = client_n.clone();
+                        let initial_client_n = client_n.load(Ordering::Relaxed);
                         let jh = tokio::spawn(async move {
                             let mut i = 0;
-                            'i: while i < settings.tries && !k.ctoken.is_cancelled() {
+                            'i: while && !k.ctoken.is_cancelled() {
                                 let ts = SystemTime::now();
                                 let r = client.execute(req.try_clone().unwrap()).await;
                                 let dur = ts.duration_since(ts).map(|x| x.as_secs_f64());
-
                                 match r {
                                     Ok(response) => {
                                         if response.status().is_success() {
@@ -529,7 +609,15 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
                                               
                                             return None;
                                         } else if response.status().is_server_error() {
-                                            tokio::time::sleep(std::time::Duration::from_millis(settings.retry_downtime)).await;
+                                            if i >= settings.tries {
+                                                if dbg_lvl() >= 3 {
+                                                    println!("[kernel {}] Giving up request - too many tries.", n); 
+                                                }
+                                                break 'i;
+                                            } else {
+                                                tokio::time::sleep(std::time::Duration::from_millis(settings.retry_downtime)).await;
+                                            }
+                                            
                                         } else {
                                             // We don't want to try again because it is unlikely it will work (not a server error)
                                             // Often we get 404 bc the data no longer exits - that is ok.
@@ -543,7 +631,16 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
                                         }
                                     },
                                     Err(e) => { 
-                                        println!("Request failed: {}", e); 
+                                        let new_n = client_n.load(Ordering::Relaxed);
+                                        if initial_client_n == new_n && k.reload.load(Ordering::Relaxed) == false  {
+                                            if dbg_lvl() >= 3 {
+                                                println!("[kernel {}] Request failed (client_n={}): {}", n, new_n, e); 
+                                            }
+                                            let _ = error_counter.fetch_update(Ordering::SeqCst, Ordering::Relaxed, |x| Some(x + 1));
+                                        } else {
+
+                                        }
+                                        // Place back into queue
                                         break 'i; 
                                     },
                                 }
@@ -571,6 +668,15 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
             handles = keep;
         }
 
+        if dbg_lvl() >= 1 {
+            println!("[kernel {}] Shutting down kernel...", n);
+        }
+
+        // Kill tor instance.
+        if let Some(cmd) = &mut k.client.lock().await.cmd {
+            let _ = cmd.kill().await;
+        }
+
         for h in handles {
             if let Ok(Some(req)) = h.await {
                 dump.lock().await.push(req);
@@ -578,19 +684,27 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
         }
 
         // Dump current item
-        for req in active_req {
-            dump.lock().await.push(req);
+        {
+            let mut dump = dump.lock().await;
+            for req in active_req {
+                dump.push(req);
+            }
         }
+
+        if dbg_lvl() >= 1 {
+            println!("[kernel {}] Kernel shut down.", n);
+        }
+        
     }
 }
 
 impl<C, T: Send> Drop for AsyncLoadManager<C, T> {
     fn drop(&mut self) {
-        self.kill_kernels();
+        self.send_kernel_kill();
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TorKernelSettings {
     max_handles: usize,
     min_interval: u64,
@@ -598,6 +712,8 @@ pub struct TorKernelSettings {
     retry_downtime: u64,
     tries: usize,
     max_div: f64,
+    errors_before_reset: i32,
+    reload_errors_before_kill: i32,
 }
 
 impl Default for TorKernelSettings {
@@ -609,6 +725,8 @@ impl Default for TorKernelSettings {
             retry_downtime: 200,
             tries: 50,
             max_div: 100.0,
+            errors_before_reset: 3,
+            reload_errors_before_kill: 2,
         }
     }
 }
