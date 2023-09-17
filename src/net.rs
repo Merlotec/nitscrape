@@ -1,10 +1,11 @@
 use atomic_float::AtomicF64;
 use chrono::Duration;
 use futures::{future::{join_all, Join}, lock::Mutex, Future, SinkExt, StreamExt};
+use lazy_static::lazy_static;
 use reqwest::{Client, ClientBuilder, IntoUrl, Proxy, Request, Response, StatusCode};
 use scraper::error;
 use std::{
-    collections::VecDeque,
+    collections::{VecDeque, HashMap},
     convert::identity,
     io::{BufRead, BufReader},
     ops::{DerefMut, Range},
@@ -307,6 +308,7 @@ pub struct LoadRequest<T: Send> {
 pub struct LoadResponse<T: Send> {
     pub response: Response,
     pub req_data: T,
+    pub tries: u64,
 }
 
 #[derive(Debug)]
@@ -506,6 +508,9 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
         while !k.ctoken.is_cancelled() {
             // First check for reload.
             if k.reload.load(Ordering::Relaxed) || (error_counter.load(Ordering::Relaxed) > settings.errors_before_reset as u32 && settings.errors_before_reset >= 0) {
+                {
+
+                }
                 k.reload.store(true, Ordering::Relaxed);
                 // Kill old client - it uses the same socket so we need it out of the way!
                 if let Some(cmd) = &mut k.client.lock().await.cmd {
@@ -581,8 +586,8 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
                         let client_n = client_n.clone();
                         let initial_client_n = client_n.load(Ordering::Relaxed);
                         let jh = tokio::spawn(async move {
-                            let mut i = 0;
-                            'i: while && !k.ctoken.is_cancelled() {
+                            let mut i: u64 = 0;
+                            'i: while i <= settings.tries && !k.ctoken.is_cancelled() {
                                 let ts = SystemTime::now();
                                 let r = client.execute(req.try_clone().unwrap()).await;
                                 let dur = ts.duration_since(ts).map(|x| x.as_secs_f64());
@@ -604,6 +609,7 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
                                                 .send(LoadResponse {
                                                     response,
                                                     req_data: load_req.unwrap().data,
+                                                    tries: i + 1,
                                                 })
                                                 .await;
                                               
@@ -625,6 +631,7 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
                                                 .send(LoadResponse {
                                                     response,
                                                     req_data: load_req.unwrap().data,
+                                                    tries: i + 1,
                                                 })
                                                 .await;
                                             return None;
@@ -710,7 +717,7 @@ pub struct TorKernelSettings {
     min_interval: u64,
     await_downtime: u64,
     retry_downtime: u64,
-    tries: usize,
+    tries: u64,
     max_div: f64,
     errors_before_reset: i32,
     reload_errors_before_kill: i32,
@@ -730,3 +737,8 @@ impl Default for TorKernelSettings {
         }
     }
 }
+
+
+// lazy_static! {
+//     static ref DBG_STATES: std::sync::Mutex<HashMap<String, String>> = std::sync::Mutex::new(HashMap::new());
+// }
