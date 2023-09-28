@@ -4,7 +4,7 @@ use lazy_static::lazy_static;
 pub use lingua::Language;
 use lingua::{LanguageDetector, LanguageDetectorBuilder};
 use rand::{distributions::Alphanumeric, Rng};
-use reqwest::{header::HeaderValue, Client, StatusCode};
+use reqwest::{Client, StatusCode};
 use std::{fmt, str::FromStr};
 
 use crate::{net, table::TweetEntry};
@@ -14,6 +14,10 @@ pub type Result<T> = std::result::Result<T, TweetError>;
 pub type TweetId = u128;
 
 pub const BATCH_SIZE: usize = 200;
+
+pub const JUNK_CHARACTERS: [char; 20] = [
+    '(', ')', ',', '\"', '.', ';', ':', '\'', '-', '&', '!', '?', '—', ' ', '–', '|', '“', '”', '‘', '’'
+];
 
 lazy_static! {
     /// This is an example for using doc comment attributes
@@ -46,6 +50,13 @@ impl fmt::Display for Tweet {
             self.quotes,
             self.likes
         )
+    }
+}
+
+impl Tweet {
+    pub fn processed_words(&self, ignore: &[String]) -> Vec<String> {
+        self.text.split_ascii_whitespace().map(|x| x.to_lowercase().replace(&JUNK_CHARACTERS,
+        "",)).filter(|x| !ignore.contains(&x)).collect()
     }
 }
 
@@ -124,7 +135,7 @@ pub fn gen_url_for_id(id: TweetId) -> String {
 }
 
 pub fn load_request(tweet_entry: TweetEntry) -> net::LoadRequest<TweetEntry> {
-    let mut req = reqwest::Request::new(
+    let req = reqwest::Request::new(
         reqwest::Method::GET,
         reqwest::Url::from_str(&gen_url_for_id(tweet_entry.id)).unwrap(),
     );

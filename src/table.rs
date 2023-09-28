@@ -1,4 +1,4 @@
-use std::{io, fmt, path::{Path, PathBuf}, fs::File};
+use std::{io, fmt, path::Path, fs::File};
 
 use chrono::{DateTime, NaiveDateTime, Utc};
 use reqwest::Client;

@@ -1,20 +1,15 @@
 use atomic_float::AtomicF64;
-use chrono::Duration;
-use futures::{future::{join_all, Join}, lock::Mutex, Future, SinkExt, StreamExt};
-use lazy_static::lazy_static;
-use reqwest::{Client, ClientBuilder, IntoUrl, Proxy, Request, Response, StatusCode};
-use scraper::error;
+use futures::{future::join_all, lock::Mutex, Future};
+use reqwest::{Client, ClientBuilder, IntoUrl, Proxy, Request, Response};
 use std::{
-    collections::{VecDeque, HashMap},
     convert::identity,
-    io::{BufRead, BufReader},
     ops::{DerefMut, Range},
-    process::{Child, Command, Stdio},
+    process::Stdio,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering, AtomicU32},
         Arc,
     },
-    time::SystemTime, os::unix::raw::time_t,
+    time::SystemTime,
 };
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::{io::AsyncBufReadExt, task::JoinHandle};
@@ -535,7 +530,7 @@ impl<C, T: Send> AsyncLoadManager<C, T> {
                         let clmut: &mut TorClient = cl.deref_mut();
                         *clmut = new_client;
                     }
-                    let res = client_n.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| Some(x + 1)).unwrap_or_else(|x| x);
+                    let _ = client_n.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| Some(x + 1)).unwrap_or_else(|x| x);
                     if dbg_lvl() >= 2 {
                         println!("[kernel {}] Reloaded kernel client (number {})", n, client_n.load(Ordering::Relaxed));
                     }
