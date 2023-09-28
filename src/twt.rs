@@ -140,67 +140,11 @@ pub fn load_request(tweet_entry: TweetEntry) -> net::LoadRequest<TweetEntry> {
         reqwest::Url::from_str(&gen_url_for_id(tweet_entry.id)).unwrap(),
     );
 
-    // req.headers_mut().insert("Accept", HeaderValue::from_str("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8").unwrap());
-    // req.headers_mut().insert(
-    //     "Accept-Encoding",
-    //     HeaderValue::from_str("gzip, deflate, br").unwrap(),
-    // );
-    // req.headers_mut().insert(
-    //     "Accept-Language",
-    //     HeaderValue::from_str("en-GB,en;q=0.9").unwrap(),
-    // );
-    // req.headers_mut()
-    //     .insert("Cache-Control", HeaderValue::from_str("max-age=0").unwrap());
-    // req.headers_mut().insert(
-    //     "Sec-Ch-Ua",
-    //     HeaderValue::from_str("Not.A/Brand\";v=\"8\", \"Chromium\";v=\"114\", \"Brave\";v=\"114\"")
-    //         .unwrap(),
-    // );
-    // req.headers_mut()
-    //     .insert("Sec-Ch-Ua-Mobile", HeaderValue::from_str("?0").unwrap());
-    // req.headers_mut().insert(
-    //     "Sec-Ch-Ua-Platform",
-    //     HeaderValue::from_str("\"Windows\"").unwrap(),
-    // );
-    // req.headers_mut()
-    //     .insert("Sec-Fetch-Dest", HeaderValue::from_str("document").unwrap());
-    // req.headers_mut()
-    //     .insert("Sec-Fetch-Mode", HeaderValue::from_str("navigate").unwrap());
-    // req.headers_mut()
-    //     .insert("Sec-Fetch-Site", HeaderValue::from_str("none").unwrap());
-    // req.headers_mut()
-    //     .insert("Sec-Fetch-User", HeaderValue::from_str("?1").unwrap());
-    // req.headers_mut()
-    //     .insert("Sec-Gpc", HeaderValue::from_str("1").unwrap());
-    // req.headers_mut().insert(
-    //     "Upgrade-Insecure-Requests",
-    //     HeaderValue::from_str("1").unwrap(),
-    // );
-    // req.headers_mut().insert("User-Agent", HeaderValue::from_str("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36").unwrap());
-
     net::LoadRequest {
         data: tweet_entry,
         req,
     }
 }
-
-// pub async fn get_tweets(ids: &[TweetId], attempts: usize) -> Vec<Result<Tweet>> {
-//     let mut res = Vec::with_capacity(ids.len());
-
-//     //div into batches.
-//     let batches = ids.len() / BATCH_SIZE;
-
-//     for b in 0..batches {
-//         let base = b * BATCH_SIZE;
-//         res.append(&mut get_batch(&ids[base..base + BATCH_SIZE], attempts).await);
-//     }
-
-//     if ids.len() % BATCH_SIZE != 0 {
-//         res.append(&mut get_batch(&ids[batches * BATCH_SIZE..], attempts).await);
-//     }
-
-//     res
-// }
 
 pub async fn get_tweets(
     clients: &mut impl Iterator<Item = Client>,

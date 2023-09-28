@@ -230,36 +230,3 @@ pub fn read_dump(path: impl AsRef<Path>) -> csv::Result<Vec<TweetEntry>> {
     let mut reader: csv::Reader<File> = csv::ReaderBuilder::new().from_path(path)?;
     Ok(reader.deserialize().filter_map(Result::ok).collect())
 }
-
-// pub async fn hydrate_csv<P1: AsRef<Path>, P2: AsRef<Path> + Clone>(input: P1, output: P2, layout: CsvLayout, start: usize, sample_density: usize, attempts: usize) -> csv::Result<()> {
-//     assert_ne!(sample_density, 0);
-//     // Read batch numher of tweets.
-//     let mut reader = TweetCsvReader::read_csv(input, layout)?;
-//     let mut entries = reader.tweet_entries();
-
-//     // Get iterator up to start.
-//     if start > 0 {
-//         let _ = entries.nth(start - 1);
-//     }
-
-//     let mut buf: Vec<TweetEntry> = Vec::with_capacity(crate::BATCH_SIZE);
-
-//     loop {
-//         if let Some(entry) = entries.nth(sample_density - 1) {
-//             if let Ok(entry) = entry {
-//                 buf.push(entry)
-//             }
-//         } else {
-//             break;
-//         }
-
-//         if buf.len() >= crate::BATCH_SIZE {
-//             let ids: Vec<TweetId> = buf.iter().map(|x| x.id).collect();
-//             let batch: Vec<Tweet> = crate::get_batch(&ids, attempts).await.into_iter().filter_map(Result::ok).collect();
-//             buf.clear();
-
-//             write_csv(&batch, output.clone())?;
-//         }
-//     }
-//     Ok(())
-// }

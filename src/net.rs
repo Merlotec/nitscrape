@@ -175,7 +175,7 @@ impl TorClientManager {
             .into_iter()
             .filter_map(|client_info| Self::existing_client(client_info))
             .collect();
-        Self { clients } //req_queue: Arc::new(PriorityQueue::new()), resp_queue: Arc::new(PriorityQueue::new())  }
+        Self { clients } 
     }
 
     pub fn iter(&self) -> TorClientIterator<'_> {
@@ -226,43 +226,7 @@ impl TorClientManager {
         }
         None
     }
-    /*
-    async fn _load_client(client_info: ClientInfo) -> Option<TorClient> {
-        let mut cmd = Command::new(&client_info.tor_path)
-            .args(["-f", &client_info.config_path])
-            .stdout(Stdio::piped())
-            .spawn()
-            .ok()?;
-
-        tokio::task::spawn_blocking(move || {
-            let stdout = cmd.stdout.as_mut().unwrap();
-            let stdout_reader = BufReader::new(stdout);
-            let stdout_lines = stdout_reader.lines();
-
-            for line in stdout_lines {
-                if let Ok(line) = line {
-                    // Check for tor launch success
-                    #[cfg(feature = "tor-output")]
-                    println!("TOR: {}", &line);
-                    if line.contains("Bootstrapped 100% (done): Done") {
-                        let scheme = format!("socks5://127.0.0.1:{}", client_info.port);
-                        println!("Initialised client with proxy scheme {}", &scheme);
-                        let client = ClientBuilder::new()
-                            .proxy(Proxy::all(scheme).unwrap())
-                            .build()
-                            .unwrap();
-                        return Some(TorClient {
-                            client_info,
-                            client,
-                            cmd: Some(cmd),
-                        });
-                    }
-                }
-            }
-            None
-        }).await.ok().and_then(identity)
-    }
-    */
+ 
     fn existing_client(client_info: ClientInfo) -> Option<TorClient> {
         let scheme = format!("socks5://127.0.0.1:{}", client_info.port);
         if dbg_lvl() >= 1 {
@@ -732,8 +696,3 @@ impl Default for TorKernelSettings {
         }
     }
 }
-
-
-// lazy_static! {
-//     static ref DBG_STATES: std::sync::Mutex<HashMap<String, String>> = std::sync::Mutex::new(HashMap::new());
-// }
