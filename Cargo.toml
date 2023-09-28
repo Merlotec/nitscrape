@@ -19,13 +19,3 @@ tokio-util = "0.7.8"
 atomic_float = "0.1.0"
 tokio = { version = "1", features = ["full"] }
 rand = "0.8.5"
-
-[features]
-tor-output = [] 
-
-[dev-dependencies]
-criterion = { version = "0.4", features = ["html_reports"] }
-
-[[bench]]
-name = "bench"
-harness = false
